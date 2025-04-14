@@ -78,46 +78,95 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Future<void> _setupPortForwarding(int port) async {
-    try {
-      final udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-      _upnpDaemon = UpnpPortForwardDaemon('p2p_chat', (protocol, port, state) {
-        print("UPnP port mapped: $protocol $port $state");
-        if (state && protocol == 'TCP') {
+  String _upnpStatus = 'Not initialized';
+bool _portForwarded = false;
+
+// Обновленный метод для настройки проброса портов
+Future<void> _setupPortForwarding(int port) async {
+  try {
+    setState(() {
+      _upnpStatus = 'Initializing UPnP...';
+    });
+
+    final udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+    
+    setState(() {
+      _upnpStatus = 'Discovering UPnP devices...';
+    });
+
+    _upnpDaemon = UpnpPortForwardDaemon('p2p_chat', (protocol, port, state) {
+      print("UPnP port mapped: $protocol $port $state");
+      if (protocol == 'TCP') {
+        setState(() {
+          _portForwarded = state;
+          _forwardedPort = state ? port : 0;
+          _upnpStatus = state 
+              ? 'Port $port forwarded successfully' 
+              : 'Failed to forward port $port';
+        });
+        if (state) _getPublicIp();
+      }
+    })
+      ..tcp(port)
+      ..run();
+    
+    setState(() {
+      _upnpStatus = 'Attempting to forward port $port...';
+    });
+
+  } catch (e) {
+    print('UPnP error: $e');
+    setState(() {
+      _upnpStatus = 'UPnP error: ${e.toString()}';
+    });
+  }
+}
+
+// Улучшенный метод получения публичного IP
+Future<void> _getPublicIp() async {
+  try {
+    setState(() {
+      _publicIp = 'Detecting...';
+    });
+
+    // Пробуем несколько сервисов на случай недоступности одного
+    final services = [
+      'https://api.ipify.org',
+      'https://ident.me',
+      'https://ifconfig.me/ip'
+    ];
+
+    for (var service in services) {
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = Duration(seconds: 3);
+        final request = await client.getUrl(Uri.parse(service));
+        final response = await request.close();
+        final ip = await response.transform(utf8.decoder).join();
+        
+        if (ip.isNotEmpty && RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(ip)) {
           setState(() {
-            _forwardedPort = port;
-            _getPublicIp();
+            _publicIp = ip;
+            _upnpStatus = 'Ready for connection at $ip:$_forwardedPort';
           });
+          return;
         }
-      })
-        ..tcp(port)
-        ..run();
-      
-      print("Trying to map port $port");
-    } catch (e) {
-      print('UPnP error: $e');
-      _showMessage('UPnP error: $e');
+      } catch (e) {
+        print('Failed to get IP from $service: $e');
+      }
     }
-  }
 
-  Future<void> _getPublicIp() async {
-    try {
-      final client = HttpClient();
-      final request = await client.getUrl(Uri.parse('https://api.ipify.org'));
-      final response = await request.close();
-      final publicIp = await response.transform(utf8.decoder).join();
-      
-      setState(() {
-        _publicIp = publicIp;
-      });
-    } catch (e) {
-      print('Error getting public IP: $e');
-      setState(() {
-        _publicIp = 'Could not determine public IP';
-      });
-    }
+    setState(() {
+      _publicIp = 'Failed to detect';
+      _upnpStatus = 'Could not determine public IP';
+    });
+  } catch (e) {
+    print('Error getting public IP: $e');
+    setState(() {
+      _publicIp = 'Error: ${e.toString()}';
+    });
   }
-
+}
   Future<void> _removePortForwarding() async {
     _upnpDaemon = null;
     setState(() {
@@ -220,7 +269,7 @@ class _ChatScreenState extends State<ChatScreen> {
       messages.add('${DateTime.now().toLocal().toString().substring(11, 19)}: $message');
     });
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -241,6 +290,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     Text('Local IP: $_localIp'),
                     Text('Public IP: $_publicIp'),
                     if (_forwardedPort != 0) Text('Forwarded Port: $_forwardedPort'),
+                   
+                    Text('UPnP Status: $_upnpStatus'),
+                    Text('Port Forwarded: $_portForwarded'),
+                    if (!_portForwarded)
+                      Text('Warning: Port may not be forwarded', style: TextStyle(color: Colors.red)),
                   ],
                 ),
               ),
