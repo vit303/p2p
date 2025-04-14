@@ -56,15 +56,25 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _getLocalIp() async {
-    for (var interface in await NetworkInterface.list()) {
-      for (var addr in interface.addresses) {
-        if (!addr.isLoopback && addr.type == InternetAddressType.IPv4) {
-          setState(() {
-            _localIp = addr.address;
-          });
-          return;
+    try {
+      for (var interface in await NetworkInterface.list()) {
+        for (var addr in interface.addresses) {
+          if (!addr.isLoopback && addr.type == InternetAddressType.IPv4) {
+            setState(() {
+              _localIp = addr.address;
+            });
+            return;
+          }
         }
       }
+      setState(() {
+        _localIp = 'Not available';
+      });
+    } catch (e) {
+      print('Error getting local IP: $e');
+      setState(() {
+        _localIp = 'Error: $e';
+      });
     }
   }
 
@@ -73,20 +83,38 @@ class _ChatScreenState extends State<ChatScreen> {
       final udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
       _upnpDaemon = UpnpPortForwardDaemon('p2p_chat', (protocol, port, state) {
         print("UPnP port mapped: $protocol $port $state");
-        if (state) {
+        if (state && protocol == 'TCP') {
           setState(() {
             _forwardedPort = port;
-            _publicIp = _upnpDaemon?.externalIP ?? 'Unknown';
+            _getPublicIp();
           });
         }
       })
-        ..udp(port)
         ..tcp(port)
         ..run();
       
       print("Trying to map port $port");
     } catch (e) {
       print('UPnP error: $e');
+      _showMessage('UPnP error: $e');
+    }
+  }
+
+  Future<void> _getPublicIp() async {
+    try {
+      final client = HttpClient();
+      final request = await client.getUrl(Uri.parse('https://api.ipify.org'));
+      final response = await request.close();
+      final publicIp = await response.transform(utf8.decoder).join();
+      
+      setState(() {
+        _publicIp = publicIp;
+      });
+    } catch (e) {
+      print('Error getting public IP: $e');
+      setState(() {
+        _publicIp = 'Could not determine public IP';
+      });
     }
   }
 
@@ -114,8 +142,10 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       
       print('Server started on port $port');
+      _showMessage('Server started. Share your public IP: $_publicIp');
     } catch (e) {
       print('Error starting server: $e');
+      _showMessage('Error starting server: $e');
     }
   }
 
@@ -126,12 +156,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (ip.isEmpty) return;
     
     try {
+      _showMessage('Connecting to $ip:$port...');
       final socket = await Socket.connect(ip, port, timeout: Duration(seconds: 10));
       _handleConnection(socket);
-      print('Connected to $ip:$port');
+      _showMessage('Connected successfully!');
     } catch (e) {
       print('Error connecting to server: $e');
-      _showMessage('Connection error: $e');
+      _showMessage('Connection failed: $e');
     }
   }
 
@@ -181,14 +212,15 @@ class _ChatScreenState extends State<ChatScreen> {
       _isHosting = false;
     });
     _removePortForwarding();
+    _showMessage('Disconnected');
   }
 
   void _showMessage(String message) {
     setState(() {
-      messages.add(message);
+      messages.add('${DateTime.now().toLocal().toString().substring(11, 19)}: $message');
     });
   }
-
+  
   @override
   Widget build(BuildContext context) {
     return Scaffold(
